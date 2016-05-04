@@ -65,7 +65,7 @@ module ActiveRecordLaxIncludes
 
     def preloaders_for_one(association, records, scope, options = {})
       grouped = grouped_records(association, records)
-      if ActiveRecord.lax_includes_enabled? && records.any? && grouped.none? && !options[:polymorphic]
+      if !ActiveRecord.lax_includes_enabled? && records.any? && grouped.none? && !options[:polymorphic]
         raise ActiveRecord::AssociationNotFoundError.new(records.first.class, association)
       end
 
