@@ -1,6 +1,6 @@
 Gem::Specification.new do |s|
-  s.name        = 'activerecord_lax_includes_2'
-  s.version     = '0.2.2'
+  s.name        = 'activerecord_lax_includes'
+  s.version     = '0.2.3'
   s.summary     = 'Hotfix nested eager loading for polymorphic and STI relation in ActiveRecord'
   s.author      = 'Charles Barbier'
   s.email       = 'unixcharles@gmail.com'
