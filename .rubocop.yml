@@ -1,0 +1,12 @@
+require:
+  - rubocop-performance
+  - rubocop-rspec
+
+AllCops:
+  NewCops: enable
+
+Style/Documentation:
+  Enabled: false
+
+Style/OptionalBooleanParameter:
+  Enabled: false
