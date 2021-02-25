@@ -47,15 +47,15 @@ module ActiveRecordLaxIncludes
       end
     end
 
-    def preloaders_for_hash(association, records, scope, polymorphic_parent)
+    def preloaders_for_hash(association, records, scope, polymorphic_parent) # rubocop:disable Metrics/MethodLength
       association.flat_map do |parent, child|
         grouped_records(parent, records, polymorphic_parent).flat_map do |reflection, reflection_records|
           loaders = preloaders_for_reflection(reflection, reflection_records, scope)
           recs = loaders.flat_map(&:preloaded_records).uniq
           child_polymorphic_parent = reflection && reflection.options[:polymorphic]
-          loaders.concat Array.wrap(child).flat_map { |assoc|
+          loaders.concat(Array.wrap(child).flat_map do |assoc|
             preloaders_on assoc, recs, scope, child_polymorphic_parent
-          }
+          end)
           loaders
         end
       end
@@ -76,11 +76,12 @@ module ActiveRecordLaxIncludes
       end
     end
 
-    def grouped_records(association, records, polymorphic_parent)
+    def grouped_records(association, records, polymorphic_parent) # rubocop:disable Metrics/CyclomaticComplexity
       h = {}
-      records.each do |record|
+      records.reject(&:nil?).each do |record|
         reflection = record.class._reflect_on_association(association)
-        if ActiveRecord.lax_includes_enabled? && polymorphic_parent && !reflection || !record.association(association).klass
+        if (ActiveRecord.lax_includes_enabled? && polymorphic_parent) &&
+           !reflection || !record.association(association).klass
           next
         end
 
