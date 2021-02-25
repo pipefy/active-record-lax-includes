@@ -10,12 +10,10 @@ module ActiveRecordLaxIncludes
 
   def lax_includes_enabled?
     result = Thread.current[:active_record_lax_includes_enabled]
-    if result.nil?
-      result =
-        Rails.configuration.respond_to?(:active_record_lax_includes_enabled) &&
-        Rails.configuration.active_record_lax_includes_enabled
-    end
-    result
+    return result unless result.nil?
+
+    Rails.configuration.respond_to?(:active_record_lax_includes_enabled) &&
+      Rails.configuration.active_record_lax_includes_enabled
   end
 
   module Base
@@ -23,7 +21,7 @@ module ActiveRecordLaxIncludes
       association = association_instance_get(name)
 
       if association.nil?
-        if reflection = self.class._reflect_on_association(name)
+        if (reflection = self.class._reflect_on_association(name))
           association = reflection.association_class.new(self, reflection)
           association_instance_set(name, association)
         elsif !ActiveRecord.lax_includes_enabled?
@@ -59,9 +57,9 @@ module ActiveRecordLaxIncludes
         reflection = records.first.class._reflect_on_association(parent)
         polymorphic_parent = reflection && reflection.options[:polymorphic]
 
-        loaders.concat Array.wrap(child).flat_map { |assoc|
+        loaders.concat(Array.wrap(child).flat_map do |assoc|
           preloaders_on assoc, recs, scope, polymorphic_parent
-        }
+        end)
         loaders
       end
     end
@@ -79,16 +77,19 @@ module ActiveRecordLaxIncludes
       end
     end
 
+    # rubocop:disable Naming/MethodParameterName
     def preloader_for(reflection, rs, rhs_klass)
       return super if legacy_active_record?
 
       super(reflection, rs)
     end
+    # rubocop:enable Naming/MethodParameterName
 
     def legacy_active_record?
       ActiveRecord::VERSION::MAJOR < 5
     end
 
+    # rubocop:disable Metrics/CyclomaticComplexity
     def grouped_records(association, records, polymorphic_parent)
       h = {}
       records.each do |record|
@@ -103,6 +104,7 @@ module ActiveRecordLaxIncludes
       end
       h
     end
+    # rubocop:enable Metrics/CyclomaticComplexity
   end
 end
 
@@ -111,3 +113,39 @@ require 'active_record'
 ActiveRecord.extend ActiveRecordLaxIncludes
 ActiveRecord::Base.prepend ActiveRecordLaxIncludes::Base
 ActiveRecord::Associations::Preloader.prepend ActiveRecordLaxIncludes::Preloader
+
+begin
+  require 'bullet'
+
+  module Bullet
+    class << self
+      alias _enable= enable=
+
+      # rubocop:disable Metrics/MethodLength
+      def enable=(enable)
+        _enable = enable
+
+        ::ActiveRecord::Associations::Preloader.undef_method(:preloaders_for_one)
+        ::ActiveRecord::Associations::Preloader.prepend(
+          Module.new do
+            def preloaders_for_one(association, records, scope, polymorphic_parent)
+              if Bullet.start?
+                records.compact!
+                unless /^HABTM_/.match?(records.first.class.name)
+                  records.each do |record|
+                    Bullet::Detector::Association.add_object_associations(record, association)
+                  end
+
+                  Bullet::Detector::UnusedEagerLoading.add_eager_loadings(records, association)
+                end
+              end
+              super
+            end
+          end
+        )
+      end
+      # rubocop:enable Metrics/MethodLength
+    end
+  end
+rescue LoadError # rubocop:disable Lint/SuppressedException
+end

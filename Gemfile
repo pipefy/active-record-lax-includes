@@ -9,5 +9,6 @@ group :development do
 end
 
 group :test do
+  gem 'bullet'
   gem 'database_cleaner-active_record'
 end

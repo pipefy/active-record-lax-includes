@@ -37,5 +37,19 @@ describe ActiveRecordLaxIncludes do
       expect(Comment.includes(commentable: :project).to_a)
         .to match_array(comment)
     end
+
+    context 'when using aside bullet gem' do
+      around do |example|
+        Bullet.enable = true
+        example.run
+        Bullet.enable = false
+      end
+
+      it 'does not raise errors' do
+        Project.create.tap { |project| Comment.create(commentable: project) }
+
+        expect { Comment.includes(commentable: :project).to_a }.not_to raise_error
+      end
+    end
   end
 end
