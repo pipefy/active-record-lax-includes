@@ -77,16 +77,15 @@ module ActiveRecordLaxIncludes
       end
     end
 
-    # rubocop:disable Naming/MethodParameterName
-    def preloader_for(reflection, rs, rhs_klass)
+    def preloader_for(*args)
       return super if legacy_active_record?
 
-      super(reflection, rs)
+      super(args.first, args.second)
     end
-    # rubocop:enable Naming/MethodParameterName
 
     def legacy_active_record?
-      ActiveRecord::VERSION::MAJOR < 5
+      @legacy_active_record ||=
+        Gem::Version.new(ActiveRecord::VERSION::STRING) < Gem::Version.new('5.2')
     end
 
     # rubocop:disable Metrics/CyclomaticComplexity
