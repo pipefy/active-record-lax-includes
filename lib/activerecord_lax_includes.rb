@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module ActiveRecordLaxIncludes
   def lax_includes
     Thread.current[:active_record_lax_includes_enabled] = true
@@ -8,11 +10,10 @@ module ActiveRecordLaxIncludes
 
   def lax_includes_enabled?
     result = Thread.current[:active_record_lax_includes_enabled]
-    if result.nil?
-      result = Rails.configuration.respond_to?(:active_record_lax_includes_enabled) &&
-                  Rails.configuration.active_record_lax_includes_enabled
-    end
-    result
+    return result unless result.nil?
+
+    Rails.configuration.respond_to?(:active_record_lax_includes_enabled) &&
+      Rails.configuration.active_record_lax_includes_enabled
   end
 
   module Base
@@ -20,7 +21,7 @@ module ActiveRecordLaxIncludes
       association = association_instance_get(name)
 
       if association.nil?
-        if reflection = self.class._reflect_on_association(name)
+        if (reflection = self.class._reflect_on_association(name))
           association = reflection.association_class.new(self, reflection)
           association_instance_set(name, association)
         elsif !ActiveRecord.lax_includes_enabled?
@@ -35,64 +36,112 @@ module ActiveRecordLaxIncludes
   module Preloader
     private
 
-    def preloaders_on(association, records, scope, options = {})
+    def preloaders_on(association, records, scope, polymorphic_parent = false)
       case association
       when Hash
-        preloaders_for_hash(association, records, scope, options)
-      when Symbol
-        preloaders_for_one(association, records, scope, options)
-      when String
-        preloaders_for_one(association.to_sym, records, scope, options)
+        preloaders_for_hash(association, records, scope, polymorphic_parent)
+      when Symbol, String
+        preloaders_for_one(association, records, scope, polymorphic_parent)
       else
         raise ArgumentError, "#{association.inspect} was not recognised for preload"
       end
     end
 
-    def preloaders_for_hash(association, records, scope, options = {})
-      association.flat_map { |parent, child|
-        loaders = preloaders_for_one parent, records, scope, options
-        polymorphic = options[:polymorphic] || loaders.any? do |l|
-          l.respond_to?(:reflection) && l.reflection.polymorphic?
-        end
-
-        recs = loaders.flat_map(&:preloaded_records).uniq
-        loaders.concat Array.wrap(child).flat_map { |assoc|
-          preloaders_on assoc, recs, scope, polymorphic: polymorphic
-        }
-        loaders
-      }
-    end
-
-    def preloaders_for_one(association, records, scope, options = {})
-      grouped = grouped_records(association, records)
-      if !ActiveRecord.lax_includes_enabled? && records.any? && grouped.none? && !options[:polymorphic]
-        raise ActiveRecord::AssociationNotFoundError.new(records.first, association)
-      end
-
-      grouped.flat_map do |reflection, klasses|
-        klasses.map do |rhs_klass, rs|
-          loader = preloader_for(reflection, rs, rhs_klass).new(rhs_klass, rs, reflection, scope)
-          loader.run self
-          loader
+    def preloaders_for_hash(association, records, scope, polymorphic_parent)
+      association.flat_map do |parent, child|
+        grouped_records(parent, records, polymorphic_parent).flat_map do |reflection, reflection_records|
+          loaders = preloaders_for_reflection(reflection, reflection_records, scope)
+          recs = loaders.flat_map(&:preloaded_records).uniq
+          child_polymorphic_parent = reflection && reflection.options[:polymorphic]
+          loaders.concat Array.wrap(child).flat_map { |assoc|
+            preloaders_on assoc, recs, scope, child_polymorphic_parent
+          }
+          loaders
         end
       end
     end
 
-    def grouped_records(association, records)
+    def preloaders_for_one(association, records, scope, polymorphic_parent)
+      grouped_records(association, records, polymorphic_parent)
+        .flat_map do |reflection, reflection_records|
+          preloaders_for_reflection reflection, reflection_records, scope
+        end
+    end
+
+    def preloaders_for_reflection(reflection, records, scope)
+      records.group_by { |record| record.association(reflection.name).klass }.map do |rhs_klass, rs|
+        loader = preloader_for(reflection, rs, rhs_klass).new(rhs_klass, rs, reflection, scope)
+        loader.run self
+        loader
+      end
+    end
+
+    def grouped_records(association, records, polymorphic_parent)
       h = {}
       records.each do |record|
-        if record && assoc = record.association(association)
-          klasses = h[assoc.reflection] ||= {}
-          (klasses[assoc.klass] ||= []) << record
+        reflection = record.class._reflect_on_association(association)
+        if ActiveRecord.lax_includes_enabled? && polymorphic_parent && !reflection || !record.association(association).klass
+          next
         end
+
+        (h[reflection] ||= []) << record
       end
       h
+    end
+
+    def preloader_for(reflection, owners, rhs_klass)
+      if legacy_active_record?
+        return super(reflection, owners, ActiveRecord.lax_includes_enabled? ? Class : rhs_klass)
+      end
+
+      super(reflection, owners)
+    end
+
+    def legacy_active_record?
+      @legacy_active_record ||=
+        Gem::Version.new(ActiveRecord::VERSION::STRING) < Gem::Version.new('5.2')
     end
   end
 end
 
 require 'active_record'
 
-ActiveRecord.send(:extend, ActiveRecordLaxIncludes)
-ActiveRecord::Base.send(:prepend, ActiveRecordLaxIncludes::Base)
-ActiveRecord::Associations::Preloader.send(:prepend, ActiveRecordLaxIncludes::Preloader)
+ActiveRecord.extend ActiveRecordLaxIncludes
+ActiveRecord::Base.prepend ActiveRecordLaxIncludes::Base
+ActiveRecord::Associations::Preloader.prepend ActiveRecordLaxIncludes::Preloader
+
+begin
+  require 'bullet'
+
+  module Bullet
+    class << self
+      alias _enable= enable=
+
+      # rubocop:disable Metrics/MethodLength
+      def enable=(enable)
+        _enable = enable
+
+        ::ActiveRecord::Associations::Preloader.undef_method(:preloaders_for_one)
+        ::ActiveRecord::Associations::Preloader.prepend(
+          Module.new do
+            def preloaders_for_one(association, records, scope, polymorphic_parent)
+              if Bullet.start?
+                records.compact!
+                unless /^HABTM_/.match?(records.first.class.name)
+                  records.each do |record|
+                    Bullet::Detector::Association.add_object_associations(record, association)
+                  end
+
+                  Bullet::Detector::UnusedEagerLoading.add_eager_loadings(records, association)
+                end
+              end
+              super
+            end
+          end
+        )
+      end
+      # rubocop:enable Metrics/MethodLength
+    end
+  end
+rescue LoadError # rubocop:disable Lint/SuppressedException
+end
