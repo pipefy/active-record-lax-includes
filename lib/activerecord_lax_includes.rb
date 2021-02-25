@@ -40,10 +40,8 @@ module ActiveRecordLaxIncludes
       case association
       when Hash
         preloaders_for_hash(association, records, scope, polymorphic_parent)
-      when Symbol
+      when Symbol, String
         preloaders_for_one(association, records, scope, polymorphic_parent)
-      when String
-        preloaders_for_one(association.to_sym, records, scope, polymorphic_parent)
       else
         raise ArgumentError, "#{association.inspect} was not recognised for preload"
       end
@@ -51,59 +49,58 @@ module ActiveRecordLaxIncludes
 
     def preloaders_for_hash(association, records, scope, polymorphic_parent)
       association.flat_map do |parent, child|
-        loaders = preloaders_for_one parent, records, scope, polymorphic_parent
-        recs = loaders.flat_map(&:preloaded_records).uniq
-
-        reflection = records.first.class._reflect_on_association(parent)
-        polymorphic_parent = reflection && reflection.options[:polymorphic]
-
-        loaders.concat(Array.wrap(child).flat_map do |assoc|
-          preloaders_on assoc, recs, scope, polymorphic_parent
-        end)
-        loaders
-      end
-    end
-
-    def preloaders_for_one(association, records, scope, polymorphic_parent)
-      grouped =
-        grouped_records(association, records, ActiveRecord.lax_includes_enabled? && polymorphic_parent)
-
-      grouped.flat_map do |reflection, klasses|
-        klasses.map do |rhs_klass, rs|
-          loader = preloader_for(reflection, rs, rhs_klass).new(rhs_klass, rs, reflection, scope)
-          loader.run self
-          loader
+        grouped_records(parent, records, polymorphic_parent).flat_map do |reflection, reflection_records|
+          loaders = preloaders_for_reflection(reflection, reflection_records, scope)
+          recs = loaders.flat_map(&:preloaded_records).uniq
+          child_polymorphic_parent = reflection && reflection.options[:polymorphic]
+          loaders.concat Array.wrap(child).flat_map { |assoc|
+            preloaders_on assoc, recs, scope, child_polymorphic_parent
+          }
+          loaders
         end
       end
     end
 
-    def preloader_for(*args)
-      return super if legacy_active_record?
+    def preloaders_for_one(association, records, scope, polymorphic_parent)
+      grouped_records(association, records, polymorphic_parent)
+        .flat_map do |reflection, reflection_records|
+          preloaders_for_reflection reflection, reflection_records, scope
+        end
+    end
 
-      super(args.first, args.second)
+    def preloaders_for_reflection(reflection, records, scope)
+      records.group_by { |record| record.association(reflection.name).klass }.map do |rhs_klass, rs|
+        loader = preloader_for(reflection, rs, rhs_klass).new(rhs_klass, rs, reflection, scope)
+        loader.run self
+        loader
+      end
+    end
+
+    def grouped_records(association, records, polymorphic_parent)
+      h = {}
+      records.each do |record|
+        reflection = record.class._reflect_on_association(association)
+        if ActiveRecord.lax_includes_enabled? && polymorphic_parent && !reflection || !record.association(association).klass
+          next
+        end
+
+        (h[reflection] ||= []) << record
+      end
+      h
+    end
+
+    def preloader_for(reflection, owners, rhs_klass)
+      if legacy_active_record?
+        return super(reflection, owners, ActiveRecord.lax_includes_enabled? ? Class : rhs_klass)
+      end
+
+      super(reflection, owners)
     end
 
     def legacy_active_record?
       @legacy_active_record ||=
         Gem::Version.new(ActiveRecord::VERSION::STRING) < Gem::Version.new('5.2')
     end
-
-    # rubocop:disable Metrics/CyclomaticComplexity
-    def grouped_records(association, records, polymorphic_parent)
-      h = {}
-      records.each do |record|
-        next unless record
-        next if polymorphic_parent && !record.class._reflect_on_association(association)
-
-        assoc = record.association(association)
-        next unless assoc.klass
-
-        klasses = h[assoc.reflection] ||= {}
-        (klasses[assoc.klass] ||= []) << record
-      end
-      h
-    end
-    # rubocop:enable Metrics/CyclomaticComplexity
   end
 end
 
